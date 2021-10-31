@@ -8,6 +8,7 @@ import zipfile
 
 from django.core.files.base import ContentFile
 from django.core.files.storage import default_storage
+from django.db.models import Q
 from django.template import Context, Template
 from django.utils import timezone
 from django.utils.module_loading import import_string
@@ -19,6 +20,13 @@ from web_fragments.fragment import Fragment
 from xblock.core import XBlock
 from xblock.completable import CompletableXBlockMixin
 from xblock.fields import Scope, String, Float, Boolean, Dict, DateTime, Integer
+
+try:
+    from common.djangoapps.student.models import CourseEnrollment
+    from lms.djangoapps.courseware.models import StudentModule
+except ImportError:
+    CourseEnrollment = None
+    StudentModule = None
 
 
 # Make '_' a no-op so we can scrape strings
@@ -149,6 +157,7 @@ class ScormXBlock(XBlock, CompletableXBlockMixin):
             context[
                 "message"
             ] = "Click 'Edit' to modify this module and upload a new SCORM package."
+        context["can_view_student_reports"] = True
         return self.student_view(context=context)
 
     def student_view(self, context=None):
@@ -156,6 +165,7 @@ class ScormXBlock(XBlock, CompletableXBlockMixin):
             "index_page_url": self.index_page_url,
             "completion_status": self.lesson_status,
             "grade": self.get_grade(),
+            "can_view_student_reports": self.can_view_student_reports,
             "scorm_xblock": self,
         }
         student_context.update(context or {})
@@ -163,6 +173,7 @@ class ScormXBlock(XBlock, CompletableXBlockMixin):
         frag = Fragment(template)
         frag.add_css(self.resource_string("static/css/scormxblock.css"))
         frag.add_javascript(self.resource_string("static/js/src/scormxblock.js"))
+        frag.add_javascript(self.resource_string("static/js/vendor/renderjson.js"))
         frag.initialize_js(
             "ScormXBlock",
             json_args={
@@ -514,6 +525,80 @@ class ScormXBlock(XBlock, CompletableXBlockMixin):
                 "index_page": self.index_page_path,
             }
         return {}
+
+    @XBlock.handler
+    def scorm_search_students(self, data, _suffix):
+        """
+        Search enrolled students by username/email.
+        """
+        if not self.can_view_student_reports:
+            return Response(status=403)
+        query = data.params.get("id", "")
+        enrollments = (
+            CourseEnrollment.objects.filter(
+                is_active=True,
+                course=self.runtime.course_id,
+            )
+            .select_related("user")
+            .order_by("user__username")
+        )
+        if query:
+            enrollments = enrollments.filter(
+                Q(user__username__startswith=query) | Q(user__email__startswith=query)
+            )
+        # The format of each result is dictated by the autocomplete js library:
+        # https://github.com/dyve/jquery-autocomplete/blob/master/doc/jquery.autocomplete.txt
+        return self.json_response(
+            [
+                {
+                    "data": {"student_id": enrollment.user.id},
+                    "value": "{} ({})".format(
+                        enrollment.user.username, enrollment.user.email
+                    ),
+                }
+                for enrollment in enrollments[:20]
+            ]
+        )
+
+    @XBlock.handler
+    def scorm_get_student_state(self, data, _suffix):
+        if not self.can_view_student_reports:
+            return Response(status=403)
+        user_id = data.params.get("id")
+        try:
+            user_id = int(user_id)
+        except (TypeError, ValueError):
+            return Response(
+                body="Invalid 'id' parameter {}".format(user_id), status=400
+            )
+        try:
+            module = StudentModule.objects.filter(
+                course_id=self.runtime.course_id,
+                module_state_key=self.scope_ids.usage_id,
+                student__id=user_id,
+            ).get()
+        except StudentModule.DoesNotExist:
+            return Response(
+                body="Student id={} is not enrolled in course".format(user_id),
+                status=404,
+            )
+        except StudentModule.MultipleObjectsReturned:
+            logger.error(
+                "Multiple StudentModule objects found for Scorm xblock: "
+                "course_id=%s module_state_key=%s student__id=%s",
+                self.runtime.course_id,
+                self.scope_ids.usage_id,
+                user_id,
+            )
+            raise
+        # TODO handle timestamps
+        return self.json_response(json.loads(module.state))
+
+    @property
+    def can_view_student_reports(self):
+        if StudentModule is None:
+            return False
+        return getattr(self.runtime, "user_is_staff", False)
 
     @staticmethod
     def workbench_scenarios():
