@@ -81,11 +81,16 @@ function ScormXBlock(runtime, element, settings) {
         "cmi.completion_status",
         "cmi.success_status",
         "cmi.core.score.raw",
-        "cmi.score.raw"
+        "cmi.score.raw",
+        'cmi.learner_id',
+        'cmi.core.student_id',
+        'cmi.learner_name',
+        'cmi.core.student_name'
     ];
     var getValueUrl = runtime.handlerUrl(element, 'scorm_get_value');
     var GetValue = function(cmi_element) {
-        if (cmi_element in uncachedValues) {
+        cmi_element = cmi_element.trim()
+        if (uncachedValues.includes(cmi_element)) {
             var response = $.ajax({
                 type: "POST",
                 url: getValueUrl,

@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 
 @XBlock.wants("settings")
+@XBlock.wants('user')
 class ScormXBlock(XBlock, CompletableXBlockMixin):
     """
     When a user uploads a Scorm package, the zip file is stored in:
@@ -318,12 +319,18 @@ class ScormXBlock(XBlock, CompletableXBlockMixin):
         Here we get only the get_value events that were not filtered by the LMSGetValue js function.
         """
         name = data.get("name")
+        user_service = self.runtime.service(self, 'user')
+        xb_user = user_service.get_current_user()
         if name in ["cmi.core.lesson_status", "cmi.completion_status"]:
             return {"value": self.lesson_status}
         if name == "cmi.success_status":
             return {"value": self.success_status}
         if name in ["cmi.core.score.raw", "cmi.score.raw"]:
             return {"value": self.lesson_score * 100}
+        if name in ['cmi.learner_id', 'cmi.core.student_id']:
+            return {'value': xb_user.opt_attrs.get('edx-platform.user_id', xb_user.full_name) or self.runtime.anonymous_student_id}
+        if name in ['cmi.learner_name', 'cmi.core.student_name']:
+            return {'value': xb_user.opt_attrs.get('edx-platform.username', xb_user.full_name)}
         return {"value": self.scorm_data.get(name, "")}
 
     @XBlock.json_handler
